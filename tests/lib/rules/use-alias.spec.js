@@ -13,6 +13,7 @@ jest.mock('find-babel-config', () => ({
 const projectRoot = '/project'
 let existsSyncSpy
 let cwdSpy
+let readDirSyncSpy
 
 beforeEach(() => {
   existsSyncSpy = jest.spyOn(fs, 'existsSync').mockImplementation(file => {
@@ -22,11 +23,43 @@ beforeEach(() => {
     return true
   })
   cwdSpy = jest.spyOn(process, 'cwd').mockImplementation(() => projectRoot)
+  readDirSyncSpy = jest.spyOn(fs, 'readdirSync').mockImplementation(dirPath => {
+    if (dirPath === '/project') {
+      return [
+        {
+          name: 'actions',
+          isDirectory: () => true,
+        },
+        {
+          name: 'lib',
+          isDirectory: () => true,
+        },
+        {
+          name: 'reducers',
+          isDirectory: () => true,
+        },
+        {
+          name: 'lib',
+          isDirectory: () => true,
+        },
+        {
+          name: 'src',
+          isDirectory: () => true,
+        },
+        {
+          name: 'root-subdir-default-alias',
+          isDirectory: () => true,
+        },
+      ]
+    }
+    return []
+  })
 })
 
 afterEach(() => {
   existsSyncSpy.mockRestore()
   cwdSpy.mockRestore()
+  readDirSyncSpy.mockRestore()
 })
 
 const createInvalid = (...args) => {
@@ -35,6 +68,7 @@ const createInvalid = (...args) => {
   let filename
   let options = []
   let errorMessage
+  let output
 
   const defaultFilename = `${projectRoot}/src/account.js`
   const defaultErrorMessage = 'Do not use relative path for aliased modules'
@@ -46,17 +80,22 @@ const createInvalid = (...args) => {
     ;[code, type, filename, errorMessage] = args
   }
 
-  return {
-    code,
-    filename: filename || defaultFilename,
-    options: options || [],
-    errors: [
-      {
-        message: errorMessage || defaultErrorMessage,
-        type,
-      },
-    ],
-  }
+  const outputObj = output ? { output } : {}
+
+  return Object.assign(
+    {
+      code,
+      filename: filename || defaultFilename,
+      options: options || [],
+      errors: [
+        {
+          message: errorMessage || defaultErrorMessage,
+          type,
+        },
+      ],
+    },
+    outputObj,
+  )
 }
 
 describe('with babel config', () => {
@@ -70,13 +109,16 @@ describe('with babel config', () => {
       "require('actions/api')",
       "require('reducers/api')",
       "require('ClientMain/api')",
+      "require('root-subdir-default-alias/api')",
       "const { api } = require('actions/api')",
       "const { api } = require('reducers/api')",
+      "const { api } = require('root-subdir-default-alias/api')",
       "import('actions/api')",
       "import('reducers/api')",
       'import(`${buildPath}/dist`)',
       "import { api } from 'actions/api'",
       "import { api } from 'reducers/api'",
+      "import { api } from 'root-subdir-default-alias/api'",
       "const { api } = dynamic(import('actions/api'))",
       "const { api } = dynamic(import('reducers/api'))",
       'const { server } = require(`${buildPath}/dist`)',
@@ -105,39 +147,62 @@ describe('with babel config', () => {
     ],
 
     invalid: [
-      createInvalid("require('../actions/api')", 'CallExpression'),
-      createInvalid("require('../reducers/api')", 'CallExpression'),
-      createInvalid("import('../../actions/api')", 'CallExpression', `${projectRoot}/src/client/index.js`),
-      createInvalid("import('../../reducers/api')", 'CallExpression', `${projectRoot}/src/client/index.js`),
-      createInvalid("const { api } = dynamic(import('../actions/api'))", 'CallExpression'),
-      createInvalid(
-        "import ClientMain from '../../../client/main/components/App'",
-        'ImportDeclaration',
-        `${projectRoot}/src/client/main/utils/index.js`,
-      ),
-      createInvalid("const { api } = dynamic(import('../reducers/api'))", 'CallExpression'),
+      createInvalid({ code: "require('../actions/api')", type: 'CallExpression', output: "require('action/api')" }),
+      createInvalid({ code: "require('../reducers/api')", type: 'CallExpression', output: "require('reducer/api')" }),
+      createInvalid({
+        code: "import('../../actions/api')",
+        type: 'CallExpression',
+        filename: `${projectRoot}/src/client/index.js`,
+        output: "import('action/api')",
+      }),
+      createInvalid({
+        code: "import('../../reducers/api')",
+        type: 'CallExpression',
+        filename: `${projectRoot}/src/client/index.js`,
+        output: "import('reducer/api')",
+      }),
+      createInvalid({
+        code: "const { api } = dynamic(import('../actions/api'))",
+        type: 'CallExpression',
+        output: "const { api } = dynamic(import('action/api'))",
+      }),
+      createInvalid({
+        code: "import ClientMain from '../../../client/main/components/App'",
+        type: 'ImportDeclaration',
+        filename: `${projectRoot}/src/client/main/utils/index.js`,
+        output: "import ClientMain from 'ClientMain/components/App'",
+      }),
+      createInvalid({
+        code: "const { api } = dynamic(import('../reducers/api'))",
+        type: 'CallExpression',
+        output: "const { api } = dynamic(import('reducer/api'))",
+      }),
       createInvalid({
         code: "const { api } = dynamic(import('../reducers/api'))",
         type: 'CallExpression',
         options: [{ ignoreDepth: 2 }],
+        output: "const { api } = dynamic(import('reducer/api'))",
       }),
       createInvalid({
         code: "import ClientMain from '../../../client/main/components/App'",
         type: 'ImportDeclaration',
         filename: `${projectRoot}/src/client/main/utils/index.js`,
         options: [{ ignoreDepth: 1 }],
+        output: "import ClientMain from 'ClientMain/components/App'",
       }),
       createInvalid({
         code: "import('actions/api')",
         type: 'CallExpression',
         filename: `${projectRoot}/package/one/src/client/main/utils/index.js`,
         options: [{ projectRoot: 'invalid/project' }],
+        output: "import('actions/api')",
       }),
       createInvalid({
         code: "import { parseResponse } from '../../../../lib/parsers'",
         type: 'ImportDeclaration',
         filename: `${projectRoot}/src/client/main/utils/index.js`,
         options: [{ extensions: ['.ts'] }],
+        output: "import { parseResponse } from 'lib/parsers'",
       }),
     ],
   })
